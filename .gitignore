@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 私密配置 —— 永远不要提交
+config.yaml
+.env
+*.local

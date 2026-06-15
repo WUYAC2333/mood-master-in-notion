@@ -1,0 +1,33 @@
+# ── MOOD 配置（GitHub Actions / 部署用）──
+# DB ID 不是机密，可直接写在这里提交。
+# 三个真正的机密（NOTION_TOKEN / DEEPSEEK_API_KEY / LINGMOU_GPT_API_KEY）
+# 用 ${ENV} 占位，由 GitHub Secrets 注入；本地运行则从你的环境变量读取。
+
+notion:
+  token: "${NOTION_TOKEN}"
+  entries_db: "766d7644-86a4-4e1c-91e5-b5efe205d257"
+  entities_db: "0d399995-ac57-4fe2-b6f7-4fd1979eb449"
+  letters_db: "0be076df-0f03-4124-a01e-85ff8199edf2"
+  rules_db: "5c8598e2-f3ef-4098-87c6-36c188da2f70"
+
+classifier:
+  provider: "openai"
+  model: "deepseek-chat"
+  api_key: "${DEEPSEEK_API_KEY}"
+  base_url: "https://api.deepseek.com"
+
+responder:
+  provider: "openai"
+  model: "gpt-4o"
+  api_key: "${LINGMOU_GPT_API_KEY}"
+  base_url: "https://api.lmuai.com/v1"
+
+letter:
+  lookback_days: 7
+
+memory:
+  max_entries: 20
+  max_chars: 6000
+
+entities:
+  enabled: true

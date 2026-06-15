@@ -1,0 +1,30 @@
+name: mood-poll
+# 日常轮询：识别情绪 + 解析实体 + 按需回应 + 跑规则
+on:
+  schedule:
+    - cron: "*/7 * * * *"   # 每 7 分钟（GitHub cron 最小 5 分钟，且可能延迟）
+  workflow_dispatch: {}      # 允许手动触发
+
+# 顺带防止 60 天无活动被停用：定时任务本身的 commit 不会刷新活动，
+# 但 workflow_dispatch + 偶尔提交即可。也可加 keepalive action。
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: mood-poll        # 防止两次运行重叠
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run poll
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LINGMOU_GPT_API_KEY: ${{ secrets.LINGMOU_GPT_API_KEY }}
+        run: |
+          cp config.example.yaml config.yaml
+          python -m mood.run --task all
