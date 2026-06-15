@@ -17,7 +17,7 @@ from .classify import classify
 from .config import load_config
 from .entities import extract_mentions
 from .generate import apply_rule, daily_summary, respond, write_letter
-from .llm import llm_from_cfg
+from .llm import llm_from_cfg, responder_from_cfg
 from .notion import Notion
 
 
@@ -161,7 +161,7 @@ def main():
     cfg = load_config(args.config)
     nz = Notion(cfg["notion"])
     classifier = llm_from_cfg(cfg["classifier"])
-    responder = llm_from_cfg(cfg["responder"])
+    responder = responder_from_cfg(cfg["responder"])
     entities_on = cfg.get("entities", {}).get("enabled", True)
     mem = cfg.get("memory", {})
     mem_entries = mem.get("max_entries", 20)

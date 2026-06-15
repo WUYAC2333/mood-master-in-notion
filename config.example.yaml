@@ -12,15 +12,19 @@ notion:
 
 classifier:
   provider: "openai"
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
   api_key: "${DEEPSEEK_API_KEY}"
   base_url: "https://api.deepseek.com"
 
 responder:
   provider: "openai"
-  model: "gpt-4o"
+  model: "gpt-5-4-mini"
   api_key: "${LINGMOU_GPT_API_KEY}"
   base_url: "https://api.lmuai.com/v1"
+  # 主模型重试失败后，用同一 key/端点依次尝试这些模型名
+  fallback_models:
+    - "gpt-5-4"
+    - "gpt-5-2"
 
 letter:
   lookback_days: 7
