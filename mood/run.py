@@ -54,36 +54,43 @@ def _build_memory(nz: Notion, exclude_id: str, max_entries: int, max_chars: int)
 def task_classify(nz: Notion, classifier, entities_on: bool) -> int:
     pages = nz.entries_need_classification()
     for page in pages:
-        # 自动标题只看正文，避免把用户标题喂回去
-        body = nz.page_body_text(page["id"])
-        if not body:
-            nz.set_emotions(page["id"], [])  # 空记录也标记已识别，避免反复扫
-            continue
-        emotions, title = classify(classifier, body)
-        nz.set_emotions(page["id"], emotions)
-        if title:
-            nz.set_title_if_empty(page, title)
-        if entities_on:
-            names = extract_mentions(body)
-            if names:
-                ids = [nz.find_or_create_entity(n) for n in names]
-                nz.link_entities(page["id"], ids)
-        print(f"[classify] {page['id'][:8]} -> {emotions} title={title!r} mentions={extract_mentions(body)}")
+        try:
+            # 自动标题只看正文，避免把用户标题喂回去
+            body = nz.page_body_text(page["id"])
+            if not body:
+                nz.set_emotions(page["id"], [])  # 空记录也标记已识别，避免反复扫
+                continue
+            emotions, title = classify(classifier, body)
+            nz.set_emotions(page["id"], emotions)
+            if title:
+                nz.set_title_if_empty(page, title)
+            if entities_on:
+                names = extract_mentions(body)
+                if names:
+                    ids = [nz.find_or_create_entity(n) for n in names]
+                    nz.link_entities(page["id"], ids)
+            print(f"[classify] {page['id'][:8]} -> {emotions} title={title!r} mentions={extract_mentions(body)}")
+        except Exception as e:  # noqa: BLE001
+            # 单条失败不影响其它记录；本条不打勾，下次轮询会重试
+            print(f"[classify] {page['id'][:8]} 失败，跳过：{e}")
     return len(pages)
 
 
 def task_respond(nz: Notion, responder, mem_entries: int, mem_chars: int) -> int:
     pages = nz.entries_need_response()
     for page in pages:
-        text = _entry_text(nz, page)
-        if not text:
+        try:
+            text = _entry_text(nz, page)
+            if not text:
+                nz.mark_responded(page["id"])
+                continue
+            memory = _build_memory(nz, page["id"], mem_entries, mem_chars)
+            reply = respond(responder, text, memory=memory)
+            nz.append_callout(page["id"], reply, emoji="💬")
             nz.mark_responded(page["id"])
-            continue
-        memory = _build_memory(nz, page["id"], mem_entries, mem_chars)
-        reply = respond(responder, text, memory=memory)
-        nz.append_callout(page["id"], reply, emoji="💬")
-        nz.mark_responded(page["id"])
-        print(f"[respond] {page['id'][:8]} ok ({len(reply)} chars, memory={len(memory)} chars)")
+            print(f"[respond] {page['id'][:8]} ok ({len(reply)} chars, memory={len(memory)} chars)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[respond] {page['id'][:8]} 失败，跳过（下次重试）：{e}")
     return len(pages)
 
 

@@ -1,10 +1,23 @@
 """LLM 调用层：统一封装 anthropic / openai，供分类器和长文生成共用。
 
 约定：所有 prompt 用中文，因为记录和回应都是中文场景。
+对中转站/上游的偶发抖动（502/503/429/超时）自动重试，避免一次失败整个任务挂掉。
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+
+# 这些异常通常是临时性的，值得重试
+_RETRY_MARKERS = ("502", "503", "429", "500", "overloaded", "timeout",
+                  "temporarily", "upstream", "unavailable")
+_MAX_ATTEMPTS = 4
+_BASE_DELAY = 2.0   # 秒，指数退避：2,4,8...
+
+
+def _is_transient(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(m in msg for m in _RETRY_MARKERS)
 
 
 @dataclass
@@ -15,12 +28,26 @@ class LLM:
     base_url: str = ""     # 自定义接口地址（中转站 / DeepSeek 等），留空用官方默认
 
     def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
-        """单轮补全，返回纯文本。"""
-        if self.provider == "anthropic":
-            return self._anthropic(system, user, max_tokens)
-        if self.provider == "openai":
-            return self._openai(system, user, max_tokens)
-        raise ValueError(f"未知的 provider: {self.provider}")
+        """单轮补全，返回纯文本。对临时性错误自动重试。"""
+        last_err: Exception | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                if self.provider == "anthropic":
+                    return self._anthropic(system, user, max_tokens)
+                if self.provider == "openai":
+                    return self._openai(system, user, max_tokens)
+                raise ValueError(f"未知的 provider: {self.provider}")
+            except ValueError:
+                raise  # 配置错误不重试
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < _MAX_ATTEMPTS - 1 and _is_transient(e):
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    print(f"[llm] 第 {attempt + 1} 次失败（{type(e).__name__}），{delay:.0f}s 后重试…")
+                    time.sleep(delay)
+                    continue
+                raise
+        raise last_err  # 理论上到不了这里
 
     def _anthropic(self, system: str, user: str, max_tokens: int) -> str:
         from anthropic import Anthropic
