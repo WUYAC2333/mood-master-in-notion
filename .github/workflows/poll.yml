@@ -2,7 +2,11 @@ name: mood-poll
 # 日常轮询：识别情绪 + 解析实体 + 按需回应 + 跑规则
 on:
   schedule:
-    - cron: "*/7 * * * *"   # 每 7 分钟（GitHub cron 最小 5 分钟，且可能延迟）
+    # 每 15 分钟，但只在北京 08:00-次日 02:00 运行（睡觉时段不跑）。
+    # GitHub cron 用 UTC：北京 08:00-02:00 = UTC 00:00-18:00 + 23:00。
+    # 注意：GitHub schedule 是“尽力而为”，高峰可能延迟甚至跳过；
+    # 真正的兜底是 run.py 里的自愈逻辑——某次没跑，下次会自动补上。
+    - cron: "*/15 0-17,23 * * *"
   workflow_dispatch: {}      # 允许手动触发
 
 # 顺带防止 60 天无活动被停用：定时任务本身的 commit 不会刷新活动，
@@ -11,9 +15,10 @@ on:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    concurrency:
-      group: mood-poll        # 防止两次运行重叠
-      cancel-in-progress: false
+    # 卡住 10 分钟自动失败，避免僵尸运行堆积。
+    # 不再用 concurrency 串行化：那会让一次卡死的运行堵死后续所有触发；
+    # 配合 run.py 的“失败不打勾”，即使偶尔重叠也不会重复处理同一条记录。
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

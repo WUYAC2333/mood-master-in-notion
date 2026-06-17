@@ -17,7 +17,7 @@ from .classify import classify
 from .config import load_config
 from .entities import extract_mentions
 from .generate import apply_rule, daily_summary, respond, write_letter
-from .llm import llm_from_cfg, responder_from_cfg
+from .llm import llm_from_cfg, responder_from_cfg, FALLBACK_REPLY
 from .notion import Notion
 
 
@@ -61,6 +61,11 @@ def task_classify(nz: Notion, classifier, entities_on: bool) -> int:
                 nz.set_emotions(page["id"], [])  # 空记录也标记已识别，避免反复扫
                 continue
             emotions, title = classify(classifier, body)
+            # 正文非空却一个情绪都没识别出来，几乎都是模型抖动/返回异常（而非真的无情绪）。
+            # 这种情况不要打勾——留到下次轮询用恢复后的接口重试，避免临时故障被永久锁死。
+            if not emotions:
+                print(f"[classify] {page['id'][:8]} 情绪为空，疑似接口异常，本次不打勾，下次重试")
+                continue
             nz.set_emotions(page["id"], emotions)
             if title:
                 nz.set_title_if_empty(page, title)
@@ -86,6 +91,11 @@ def task_respond(nz: Notion, responder, mem_entries: int, mem_chars: int) -> int
                 continue
             memory = _build_memory(nz, page["id"], mem_entries, mem_chars)
             reply = respond(responder, text, memory=memory)
+            # 所有模型都失败时 responder 会返回固定兜底话术。这种情况不要写进 Notion、
+            # 也不要打“已回应”勾——否则临时故障会被当成正式回应永久锁死。留到下次重试。
+            if reply == FALLBACK_REPLY:
+                print(f"[respond] {page['id'][:8]} 所有模型失败，本次不回应不打勾，下次重试")
+                continue
             nz.append_callout(page["id"], reply, emoji="💬")
             nz.mark_responded(page["id"])
             print(f"[respond] {page['id'][:8]} ok ({len(reply)} chars, memory={len(memory)} chars)")
@@ -133,6 +143,9 @@ def task_letter(nz: Notion, responder, lookback_days: int) -> bool:
         return False
     joined = "\n\n---\n\n".join(blobs)
     title, body = write_letter(responder, joined)
+    if body == FALLBACK_REPLY:
+        print("[letter] 所有模型失败，不生成来信（避免写入兜底话术）")
+        return False
     nz.create_letter(title, body)
     print(f"[letter] 已生成《{title}》，综合了 {len(blobs)} 条记录")
     return True
@@ -146,6 +159,9 @@ def task_daily(nz: Notion, responder) -> bool:
         return False
     joined = "\n\n---\n\n".join(blobs)
     title, body = daily_summary(responder, joined)
+    if body == FALLBACK_REPLY:
+        print("[daily] 所有模型失败，不生成日总结（避免写入兜底话术）")
+        return False
     nz.create_letter(title, body)   # 复用 Letters 库存放日总结
     print(f"[daily] 已生成《{title}》，综合了 {len(blobs)} 条今日记录")
     return True
