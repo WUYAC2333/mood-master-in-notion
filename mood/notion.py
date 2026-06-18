@@ -138,6 +138,12 @@ class Notion:
         p = page.get("properties", {}).get(name, {})
         return "".join(r.get("plain_text", "") for r in p.get("rich_text", [])).strip()
 
+    @staticmethod
+    def prop_multi_select(page: dict, name: str) -> list[str]:
+        """读取 multi_select 属性的所有选项名，如「情绪」里的标签列表。"""
+        p = page.get("properties", {}).get(name, {})
+        return [opt.get("name", "") for opt in p.get("multi_select", []) if opt.get("name")]
+
     # ── 写回 ──────────────────────────────────────────────
     def set_emotions(self, page_id: str, emotions: list[str]) -> None:
         self.client.pages.update(page_id=page_id, properties={

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>情绪泡泡 · 近 7 天</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      font-family: "Inter", "Nunito", -apple-system, BlinkMacSystemFont,
+                   "Segoe UI", "PingFang SC", "HarmonyOS Sans SC",
+                   "Microsoft YaHei", sans-serif;
+      background: transparent;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    #wrap { width: 100%; height: 100vh; display: flex; flex-direction: column; }
+    header {
+      padding: 16px 20px 4px; flex: 0 0 auto;
+    }
+    header h1 {
+      margin: 0; font-size: 15px; font-weight: 700;
+      letter-spacing: .02em; opacity: .8;
+    }
+    header .meta { margin-top: 3px; font-size: 12px; font-weight: 500; opacity: .4; }
+    #chart { flex: 1 1 auto; width: 100%; min-height: 0; }
+    #empty {
+      display: none; align-items: center; justify-content: center;
+      height: 100%; opacity: .5; font-size: 14px;
+    }
+    .bubble text {
+      fill: #fff; text-anchor: middle; pointer-events: none;
+      font-weight: 600; letter-spacing: .01em;
+    }
+    .bubble .emotion { font-size: 14px; }
+    .bubble .count { font-size: 11px; font-weight: 500; opacity: .8; }
+    .bubble circle { cursor: default; }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=Nunito:wght@600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="wrap">
+    <header>
+      <h1>情绪泡泡</h1>
+      <div class="meta" id="meta">加载中…</div>
+    </header>
+    <div id="chart"></div>
+    <div id="empty">近 7 天还没有识别出情绪记录 🫧</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script>
+    const META = document.getElementById("meta");
+    const EMPTY = document.getElementById("empty");
+    const CHART = document.getElementById("chart");
+
+    // 加 ?t=时间戳 防止 Notion / 浏览器缓存住旧 data.json
+    fetch("./data.json?t=" + Date.now())
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(render)
+      .catch(err => { META.textContent = "数据加载失败：" + err; });
+
+    function render(data) {
+      const bubbles = (data.bubbles || []).filter(b => b.count > 0);
+      const when = (data.updated || "").slice(0, 16).replace("T", " ");
+      META.textContent =
+        `近 ${data.window_days} 天 · ${data.total_entries} 条记录 · 更新于 ${when} UTC`;
+
+      if (!bubbles.length) {
+        EMPTY.style.display = "flex";
+        return;
+      }
+
+      function draw() {
+        CHART.innerHTML = "";
+        const W = CHART.clientWidth || 600;
+        const H = CHART.clientHeight || 400;
+        const maxCount = d3.max(bubbles, d => d.count);
+        const base = Math.min(W, H);
+        // 半径按出现次数的平方根缩放（面积≈频率）。
+        // 最小半径定得足够大，保证再小的气泡也容得下两行统一字号的文字。
+        const rMin = Math.max(30, base * 0.085);
+        const rMax = Math.max(rMin + 14, base * 0.22);
+        const rScale = d3.scaleSqrt()
+          .domain([1, Math.max(maxCount, 1)])
+          .range([rMin, rMax]);
+
+        const nodes = bubbles.map(b => ({ ...b, r: rScale(b.count) }));
+
+        const svg = d3.select(CHART).append("svg")
+          .attr("width", W).attr("height", H)
+          .attr("viewBox", `0 0 ${W} ${H}`);
+
+        const g = svg.selectAll("g.bubble")
+          .data(nodes).join("g").attr("class", "bubble");
+
+        g.append("circle")
+          .attr("r", d => d.r)
+          .attr("fill", d => d.color)
+          .attr("fill-opacity", 0.9)
+          .append("title")
+          .text(d => `${d.emotion}：${d.count} 次`);
+
+        // 文字统一字号（由 CSS class 控制），不再随半径变化，更精致
+        g.append("text")
+          .attr("class", "emotion")
+          .attr("dy", "-0.15em")
+          .text(d => d.emotion);
+
+        g.append("text")
+          .attr("class", "count")
+          .attr("dy", "1.25em")
+          .text(d => d.count);
+
+        // 力导向：互相不重叠 + 向画布中心聚拢
+        const sim = d3.forceSimulation(nodes)
+          .force("center", d3.forceCenter(W / 2, H / 2))
+          .force("charge", d3.forceManyBody().strength(5))
+          .force("collide", d3.forceCollide().radius(d => d.r + 2).strength(0.9))
+          .force("x", d3.forceX(W / 2).strength(0.05))
+          .force("y", d3.forceY(H / 2).strength(0.05))
+          .on("tick", () => {
+            nodes.forEach(d => {
+              d.x = Math.max(d.r, Math.min(W - d.r, d.x));
+              d.y = Math.max(d.r, Math.min(H - d.r, d.y));
+            });
+            g.attr("transform", d => `translate(${d.x},${d.y})`);
+          });
+
+        // 鼠标拖拽（桌面端把玩用，移动端无碍）
+        g.call(d3.drag()
+          .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+          .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+          .on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+      }
+
+      draw();
+      // 窗口/iframe 尺寸变化时重画，保持自适应
+      let timer;
+      window.addEventListener("resize", () => {
+        clearTimeout(timer);
+        timer = setTimeout(draw, 200);
+      });
+    }
+  </script>
+</body>
+</html>

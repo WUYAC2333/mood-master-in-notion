@@ -16,6 +16,8 @@
 - **@实体网络**：正文里写 `@[名称]`，自动建实体并把记录关联过去；在实体页用反向关联看全部相关记录。
 - **规则 agent**：在 Rules 数据库定义「触发条件 + 提醒话术」（如反事实大师），
   命中的记录会被追加一条提醒。
+- **情绪泡泡图**：统计近 7 天识别出的情绪关键词，用不同颜色的气泡按频率展示
+  （暖色=积极、冷色=消极），部署在 GitHub Pages，可 embed 进 Notion。
 
 ## 时效说明
 
@@ -49,6 +51,26 @@ GitHub Actions 定时任务最小间隔 5 分钟，且高峰可能延迟 ~15 分
 
 > 公开仓库 = 代码公开，但你的**日记在 Notion（私有）、密钥在 Secrets（加密）**，都不公开。
 > 注意：超过 60 天无仓库活动，GitHub 会暂停定时任务——偶尔提交或手动触发一次即可。
+
+## 情绪泡泡图（GitHub Pages）
+
+近 7 天的情绪关键词，做成不同颜色的气泡（暖色=积极、冷色=消极），频率越高气泡越大。
+
+- 数据：`mood/bubbles.py` 只读 Notion 已识别好的「情绪」属性，不调模型、几乎零成本。
+- 渲染：`docs/index.html`（D3 力导向真气泡），浏览器端 `fetch ./data.json`。
+- 调度：`.github/workflows/bubbles.yml` 定时统计 + 部署，**不往仓库提交任何文件**。
+
+**一次性开启 Pages**（仓库 Settings → Pages）：把 **Source** 选成 **GitHub Actions**。
+之后 `bubbles` 工作流每次跑完会自动发布，地址形如
+`https://<用户名>.github.io/<仓库名>/`。
+
+**嵌入 Notion**：在日记页输入 `/embed`，粘贴上面的 Pages 地址即可。
+
+**以后微调**：配色改 `mood/bubbles.py` 的 `EMOTION_COLORS`；字体/字号/气泡大小改
+`docs/index.html` 的 CSS 与半径数值。推上去后 Pages 自动重新部署。
+
+本地预览：`python -m mood.run --task bubbles --out docs/data.json` 生成数据后，
+`python -m http.server` 起服务，浏览器访问 `docs/index.html`（直接双击会被 CORS 拦住）。
 
 ## 本地运行
 

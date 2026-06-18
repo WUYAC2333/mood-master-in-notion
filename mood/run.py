@@ -15,6 +15,7 @@ import argparse
 
 from .classify import classify
 from .config import load_config
+from .bubbles import export_bubble_data
 from .entities import extract_mentions
 from .generate import apply_rule, daily_summary, respond, write_letter
 from .llm import llm_from_cfg, responder_from_cfg, FALLBACK_REPLY
@@ -169,13 +170,24 @@ def task_daily(nz: Notion, responder) -> bool:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", choices=["all", "classify", "respond", "rules", "letter", "daily"],
+    ap.add_argument("--task", choices=["all", "classify", "respond", "rules", "letter", "daily", "bubbles"],
                     default="all")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--out", default="docs/data.json",
+                    help="bubbles 任务的数据输出路径（默认 docs/data.json，供 GitHub Pages 用）")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     nz = Notion(cfg["notion"])
+
+    # bubbles 只读 Notion、不调任何模型，单独处理，避免无谓地初始化 LLM。
+    if args.task == "bubbles":
+        days = cfg.get("letter", {}).get("lookback_days", 7)
+        data = export_bubble_data(nz, days, args.out)
+        print(f"[bubbles] 近 {days} 天 {data['total_entries']} 条记录 -> "
+              f"{len(data['bubbles'])} 种情绪，已写入 {args.out}")
+        return
+
     classifier = llm_from_cfg(cfg["classifier"])
     responder = responder_from_cfg(cfg["responder"])
     entities_on = cfg.get("entities", {}).get("enabled", True)

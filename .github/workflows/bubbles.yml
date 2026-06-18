@@ -1,0 +1,45 @@
+name: mood-bubbles
+# 情绪泡泡图：统计近 7 天情绪频率 -> 生成 data.json -> 部署到 GitHub Pages。
+# 只读 Notion、不调模型，几乎零成本，所以可以高频跑。
+# 部署用官方 Pages Actions，不往仓库提交任何文件，不污染提交历史。
+on:
+  schedule:
+    - cron: "20 0-17,23 * * *"   # 与 poll 错开几分钟，北京 08:00-次日 02:00 每小时一次
+  workflow_dispatch: {}
+
+# Pages 部署所需权限
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署，新触发取消旧的
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Build bubble data
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: |
+          cp config.example.yaml config.yaml
+          python -m mood.run --task bubbles --out docs/data.json
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deploy
+        uses: actions/deploy-pages@v4
