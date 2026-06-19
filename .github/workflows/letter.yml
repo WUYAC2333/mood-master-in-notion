@@ -4,7 +4,7 @@ name: mood-letter
 # 也可在 Actions 页手动触发。
 on:
   schedule:
-    - cron: “30 14 * * 0”   # UTC 周日 14:30 = 北京时间周日 22:30
+    - cron: "30 14 * * 0"   # UTC 周日 14:30 = 北京时间周日 22:30
   workflow_dispatch: {}
 
 jobs:
