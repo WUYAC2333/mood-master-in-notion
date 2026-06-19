@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .classify import classify
 from .config import load_config
@@ -130,42 +131,44 @@ def task_rules(nz: Notion, responder) -> int:
     return hits
 
 
-def task_letter(nz: Notion, responder, lookback_days: int) -> bool:
+def task_letter(nz: Notion, responder, lookback_days: int) -> str:
+    """返回状态：'ok' 已生成 / 'empty' 无记录可跳过 / 'failed' 模型全失败。"""
     pages = nz.recent_entries(lookback_days)
     if not pages:
         print("[letter] 近期没有记录，跳过")
-        return False
+        return "empty"
     blobs = []
     for p in pages:
         t = _entry_text(nz, p)
         if t:
             blobs.append(t)
     if not blobs:
-        return False
+        return "empty"
     joined = "\n\n---\n\n".join(blobs)
     title, body = write_letter(responder, joined)
     if body == FALLBACK_REPLY:
         print("[letter] 所有模型失败，不生成来信（避免写入兜底话术）")
-        return False
+        return "failed"
     nz.create_letter(title, body)
     print(f"[letter] 已生成《{title}》，综合了 {len(blobs)} 条记录")
-    return True
+    return "ok"
 
 
-def task_daily(nz: Notion, responder) -> bool:
+def task_daily(nz: Notion, responder) -> str:
+    """返回状态：'ok' 已生成 / 'empty' 今天无记录 / 'failed' 模型全失败。"""
     pages = nz.entries_today()
     blobs = [t for p in pages if (t := _entry_text(nz, p))]
     if not blobs:
         print("[daily] 今天没有记录，跳过")
-        return False
+        return "empty"
     joined = "\n\n---\n\n".join(blobs)
     title, body = daily_summary(responder, joined)
     if body == FALLBACK_REPLY:
         print("[daily] 所有模型失败，不生成日总结（避免写入兜底话术）")
-        return False
+        return "failed"
     nz.create_letter(title, body)   # 复用 Letters 库存放日总结
     print(f"[daily] 已生成《{title}》，综合了 {len(blobs)} 条今日记录")
-    return True
+    return "ok"
 
 
 def main():
@@ -201,10 +204,17 @@ def main():
         task_respond(nz, responder, mem_entries, mem_chars)
     if args.task in ("all", "rules"):
         task_rules(nz, responder)
+    # daily / letter 是“错过就没了”的一次性任务：模型全失败时用非零退出码，
+    # 让 GitHub Actions 显示红叉，方便一眼发现没生成。
+    # “今天/近期没记录”(empty) 是正常情况，仍按成功(绿色)处理。
     if args.task == "letter":
-        task_letter(nz, responder, cfg.get("letter", {}).get("lookback_days", 7))
+        status = task_letter(nz, responder, cfg.get("letter", {}).get("lookback_days", 7))
+        if status == "failed":
+            sys.exit(1)
     if args.task == "daily":
-        task_daily(nz, responder)
+        status = task_daily(nz, responder)
+        if status == "failed":
+            sys.exit(1)
 
 
 if __name__ == "__main__":

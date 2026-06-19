@@ -15,7 +15,45 @@ _MAX_ATTEMPTS = 4
 _BASE_DELAY = 2.0   # 秒，指数退避：2,4,8...
 
 
+def _err_detail(err: Exception) -> str:
+    """尽量榨出可诊断的错误信息：HTTP 状态码 + 上游返回的正文。
+    OpenAI/Anthropic SDK 的异常对象常带 .status_code 和 .response，
+    光打类名（InternalServerError）等于没说，必须把正文挖出来。"""
+    parts: list[str] = []
+    code = getattr(err, "status_code", None)
+    if code is not None:
+        parts.append(f"HTTP {code}")
+    # SDK 异常通常带 .response（httpx.Response），里面才是上游的真话
+    resp = getattr(err, "response", None)
+    body = None
+    if resp is not None:
+        try:
+            body = resp.text
+        except Exception:  # noqa: BLE001
+            body = None
+    msg = body or str(err)
+    if msg:
+        # 截断，避免上游返回一大坨 HTML 把日志刷爆
+        msg = msg.replace("\n", " ").strip()
+        parts.append(msg[:500])
+    return " | ".join(parts) or repr(err)
+
+
+def _http_status(err: Exception) -> int | None:
+    return getattr(err, "status_code", None)
+
+
 def _is_transient(err: Exception) -> bool:
+    # 明确的 HTTP 状态码优先判断：4xx（除 408 超时/429 限流）是客户端错误，重试无意义
+    code = _http_status(err)
+    if code is not None:
+        if code in (408, 429):
+            return True
+        if 400 <= code < 500:
+            return False   # 请求本身有问题（太长 / 参数错 / 鉴权），重试也是白搭
+        if code >= 500:
+            return True     # 上游错误，值得重试
+    # 拿不到状态码时退回关键字匹配
     msg = str(err).lower()
     return any(m in msg for m in _RETRY_MARKERS)
 
@@ -43,9 +81,11 @@ class LLM:
                 last_err = e
                 if attempt < _MAX_ATTEMPTS - 1 and _is_transient(e):
                     delay = _BASE_DELAY * (2 ** attempt)
-                    print(f"[llm] 第 {attempt + 1} 次失败（{type(e).__name__}），{delay:.0f}s 后重试…")
+                    print(f"[llm] 第 {attempt + 1} 次失败，{delay:.0f}s 后重试… 详情：{_err_detail(e)}")
                     time.sleep(delay)
                     continue
+                # 不重试（4xx 等）或已是最后一次：把真实原因打出来再抛
+                print(f"[llm] 放弃重试（{type(e).__name__}）：{_err_detail(e)}")
                 raise
         raise last_err  # 理论上到不了这里
 
@@ -110,7 +150,7 @@ class FallbackLLM:
         try:
             return self.primary.complete(system, user, max_tokens)
         except Exception as e:  # noqa: BLE001
-            print(f"[llm] 主模型 {self.primary.model} 失败（{type(e).__name__}）")
+            print(f"[llm] 主模型 {self.primary.model} 失败：{_err_detail(e)}")
         # 2) 依次换备用模型名（同 key、同端点）
         for name in self.fallback_models:
             alt = LLM(provider=self.primary.provider, model=name,
@@ -119,7 +159,7 @@ class FallbackLLM:
                 print(f"[llm] 改用备用模型 {name}…")
                 return alt.complete(system, user, max_tokens)
             except Exception as e:  # noqa: BLE001
-                print(f"[llm] 备用模型 {name} 也失败（{type(e).__name__}）")
+                print(f"[llm] 备用模型 {name} 也失败：{_err_detail(e)}")
         # 3) 全失败 → 固定兜底话术
         print("[llm] 所有模型均失败，返回兜底话术")
         return self.final_reply
