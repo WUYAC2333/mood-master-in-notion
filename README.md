@@ -21,8 +21,13 @@
 
 ## 时效说明
 
-GitHub Actions 定时任务最小间隔 5 分钟，且高峰可能延迟 ~15 分钟。
-所以是「记完几分钟到十几分钟后收到回应」，不是即时。对反思日记足够。
+四个工作流都只用 `workflow_dispatch` 触发，由外部定时器（cron-job.org，免费）
+按精确时间调 GitHub API 唤起 —— **不用 GitHub 自带的 `schedule`**，因为它“尽力而为”，
+高峰常延迟数小时甚至跳过（曾把“当晚 22:00”的日总结拖到次日凌晨）。
+`workflow_dispatch` 不受此影响，runner 几秒内即起。
+
+即便某次触发漏了，`run.py` 的自愈逻辑（只处理“没打勾”的记录）也会在下次补上，
+不会重复、不会永久漏处理。外部定时器的配置见下方「外部定时器」一节。
 
 ## 关于 @实体的写法
 
@@ -46,11 +51,36 @@ GitHub Actions 定时任务最小间隔 5 分钟，且高峰可能延迟 ~15 分
    - `NOTION_ENTRIES_DB` / `NOTION_ENTITIES_DB` / `NOTION_LETTERS_DB` / `NOTION_RULES_DB`
    - `CLASSIFIER_API_KEY`（小模型用）
    - `RESPONDER_API_KEY`（好模型用，可与上面相同）
-5. 完成。`.github/workflows/poll.yml` 每 7 分钟跑一次，`letter.yml` 每周一来信。
-   也可在 Actions 页手动 `Run workflow` 立即触发。
+5. 完成。四个工作流都靠 `workflow_dispatch` 触发，由外部定时器精确唤起
+   （见「外部定时器」一节）。也可随时在 Actions 页手动 `Run workflow` 立即触发。
 
 > 公开仓库 = 代码公开，但你的**日记在 Notion（私有）、密钥在 Secrets（加密）**，都不公开。
-> 注意：超过 60 天无仓库活动，GitHub 会暂停定时任务——偶尔提交或手动触发一次即可。
+
+## 外部定时器（治 GitHub schedule 的延迟）
+
+用免费的 cron-job.org 按精确时间调 GitHub 的 `workflow_dispatch` API 来触发工作流，
+绕开 `schedule` 动辄数小时的延迟。一次性配置，之后零维护。
+
+1. **建细粒度 token**：https://github.com/settings/personal-access-tokens/new
+   - Repository access → Only select repositories → 选本仓库
+   - Permissions → Repository → **Actions: Read and write**（其余 No access）
+   - 生成后复制 `github_pat_xxx`（只显示一次）
+2. **注册 cron-job.org**，账户设置里把时区设为 `Asia/Shanghai`。
+3. **为每个工作流建一个 cronjob**，URL（替换 `<文件名>`）：
+   ```
+   https://api.github.com/repos/<用户名>/<仓库名>/actions/workflows/<文件名>/dispatches
+   ```
+   - Method: `POST`
+   - Headers：
+     `Accept: application/vnd.github+json`、
+     `Authorization: Bearer github_pat_xxx`、
+     `X-GitHub-Api-Version: 2022-11-28`
+   - Body：`{"ref":"main"}`
+   - 时间：poll.yml 每 15 分钟、bubbles.yml 每小时、daily.yml 每天 22:00、
+     letter.yml 每周日 22:30。
+4. 每个建好后点 TEST RUN，到 Actions 页确认对应工作流被触发即成功。
+
+> `workflow_dispatch` 要求工作流文件已在默认分支（main）上，所以先推送、再去 cron-job.org 配置。
 
 ## 情绪泡泡图（GitHub Pages）
 

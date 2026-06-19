@@ -1,8 +1,10 @@
 name: mood-letter
-# 定期来信：每周日晚上 10:30（北京时间）
+# 定期来信：每周日 22:30（北京时间）。
+# 仍用 GitHub schedule（一周一次，晚点无妨）；schedule 与 workflow_dispatch 共存，
+# 也可在 Actions 页手动触发。
 on:
   schedule:
-    - cron: "30 14 * * 0"   # UTC 周日 14:30 = 北京时间周日 22:30
+    - cron: “30 14 * * 0”   # UTC 周日 14:30 = 北京时间周日 22:30
   workflow_dispatch: {}
 
 jobs:

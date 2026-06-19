@@ -1,16 +1,11 @@
 name: mood-poll
 # 日常轮询：识别情绪 + 解析实体 + 按需回应 + 跑规则
+#
+# 触发方式：由外部定时器（cron-job.org）按精确时间调 workflow_dispatch API。
+# 不用 GitHub 自带的 schedule —— 它是“尽力而为”，高峰常延迟数小时甚至跳过。
+# 真正的兜底仍是 run.py 的自愈逻辑：某次没跑，下次会自动补上未处理的记录。
 on:
-  schedule:
-    # 每 15 分钟，但只在北京 08:00-次日 02:00 运行（睡觉时段不跑）。
-    # GitHub cron 用 UTC：北京 08:00-02:00 = UTC 00:00-18:00 + 23:00。
-    # 注意：GitHub schedule 是“尽力而为”，高峰可能延迟甚至跳过；
-    # 真正的兜底是 run.py 里的自愈逻辑——某次没跑，下次会自动补上。
-    - cron: "*/15 0-17,23 * * *"
-  workflow_dispatch: {}      # 允许手动触发
-
-# 顺带防止 60 天无活动被停用：定时任务本身的 commit 不会刷新活动，
-# 但 workflow_dispatch + 偶尔提交即可。也可加 keepalive action。
+  workflow_dispatch: {}
 
 jobs:
   poll:

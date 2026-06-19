@@ -1,10 +1,11 @@
 name: mood-bubbles
 # 情绪泡泡图：统计近 7 天情绪频率 -> 生成 data.json -> 部署到 GitHub Pages。
-# 只读 Notion、不调模型，几乎零成本，所以可以高频跑。
-# 部署用官方 Pages Actions，不往仓库提交任何文件，不污染提交历史。
+# 只读 Notion、不调模型，几乎零成本。
+# 仍用 GitHub schedule（泡泡图不在意几小时延迟）；也可手动 / API 触发。
+# 部署用官方 Pages Actions，不往仓库提交文件。
 on:
   schedule:
-    - cron: "20 0-17,23 * * *"   # 与 poll 错开几分钟，北京 08:00-次日 02:00 每小时一次
+    - cron: "20 0-17,23 * * *"   # 北京 08:00-次日 02:00 每小时一次（高峰可能延迟，无妨）
   workflow_dispatch: {}
 
 # Pages 部署所需权限

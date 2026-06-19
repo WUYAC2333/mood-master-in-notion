@@ -1,8 +1,7 @@
 name: mood-daily
-# 每日总结：每晚 10:00（北京时间），当天有记录才生成
+# 每日总结：每晚 22:00（北京时间）由外部定时器 cron-job.org 触发，当天有记录才生成。
+# 不用 GitHub schedule —— 它会延迟数小时，曾把“当晚 22:00”的总结拖到次日凌晨。
 on:
-  schedule:
-    - cron: "0 14 * * *"   # UTC 每天 14:00 = 北京时间 22:00
   workflow_dispatch: {}
 
 jobs:
