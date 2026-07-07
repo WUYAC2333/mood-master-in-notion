@@ -29,6 +29,36 @@ def _entry_text(nz: Notion, page: dict) -> str:
     return f"{title}\n{body}".strip() if title else body
 
 
+def _fmt_local(iso_utc: str, tz_offset_hours: int = 8) -> str:
+    """把 Notion 的 UTC created_time 格式化成北京时间，带星期与时刻。
+    例：'2026-07-08 周二 03:15'。模型据此才能说出『昨天』『上周六』『凌晨3点』。"""
+    if not iso_utc:
+        return ""
+    from datetime import datetime, timedelta, timezone
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return iso_utc[:10]
+    local = dt.astimezone(timezone(timedelta(hours=tz_offset_hours)))
+    week = "一二三四五六日"[local.weekday()]
+    return local.strftime(f"%Y-%m-%d 周{week} %H:%M")
+
+
+def _now_hint() -> str:
+    """给模型的『当前时间』锚点，让它能把记录时间换算成相对说法。"""
+    from datetime import datetime, timezone
+    return _fmt_local(datetime.now(timezone.utc).isoformat())
+
+
+def _entry_block(nz: Notion, page: dict) -> str:
+    """把一条记录格式化成『时间戳 + 正文』，供日总结/来信使用。"""
+    text = _entry_text(nz, page)
+    if not text:
+        return ""
+    when = _fmt_local(page.get("created_time", ""))
+    return f"【{when}】\n{text}" if when else text
+
+
 def _build_memory(nz: Notion, exclude_id: str, max_entries: int, max_chars: int) -> str:
     """取最近的若干条记录（不含当前这条）拼成记忆背景，并对总长度封顶。
     这样无论历史多长，每次喂给模型的记忆都是有界的，避免成本与超长问题。"""
@@ -41,8 +71,8 @@ def _build_memory(nz: Notion, exclude_id: str, max_entries: int, max_chars: int)
         t = _entry_text(nz, p)
         if not t:
             continue
-        # 给每条记录加上日期，帮助模型建立时间感
-        when = p.get("created_time", "")[:10]
+        # 给每条记录加上完整时间戳（北京时间+星期+时刻），帮助模型建立时间感
+        when = _fmt_local(p.get("created_time", ""))
         chunk = f"[{when}] {t}"
         if used + len(chunk) > max_chars:
             break
@@ -137,38 +167,62 @@ def task_letter(nz: Notion, responder, lookback_days: int) -> str:
     if not pages:
         print("[letter] 近期没有记录，跳过")
         return "empty"
-    blobs = []
-    for p in pages:
-        t = _entry_text(nz, p)
-        if t:
-            blobs.append(t)
+    blobs = [b for p in pages if (b := _entry_block(nz, p))]
     if not blobs:
         return "empty"
-    joined = "\n\n---\n\n".join(blobs)
+    joined = f"【当前时间】{_now_hint()}\n\n" + "\n\n---\n\n".join(blobs)
     title, body = write_letter(responder, joined)
     if body == FALLBACK_REPLY:
         print("[letter] 所有模型失败，不生成来信（避免写入兜底话术）")
         return "failed"
-    nz.create_letter(title, body)
+    page_id = nz.create_letter(title, body)
+    _notify(nz, page_id, f"你有一封新来信《{title}》，来读读吧 💌")
     print(f"[letter] 已生成《{title}》，综合了 {len(blobs)} 条记录")
     return "ok"
 
 
+def _notify(nz: Notion, page_id: str, text: str) -> None:
+    """在来信/日总结页发一条 @提及评论触发通知。失败绝不影响主流程——
+    信已经生成写入了，通知只是锦上添花，出错就打日志跳过。"""
+    try:
+        mentioned = nz.notify_on_page(page_id, text)
+        if mentioned:
+            print("[notify] 已发送 @提醒评论")
+        else:
+            print("[notify] 未识别到唯一真人用户，已发普通评论但未@（不会推送）。"
+                  "可在 config 的 notify_user_id 手动指定。")
+    except Exception as e:  # noqa: BLE001
+        print(f"[notify] 发送提醒失败，已跳过（不影响来信本身）：{e}")
+
+
 def task_daily(nz: Notion, responder) -> str:
     """返回状态：'ok' 已生成 / 'empty' 今天无记录 / 'failed' 模型全失败。"""
-    pages = nz.entries_today()
-    blobs = [t for p in pages if (t := _entry_text(nz, p))]
+    pages = nz.entries_for_daily()
+    blobs = [b for p in pages if (b := _entry_block(nz, p))]
     if not blobs:
-        print("[daily] 今天没有记录，跳过")
+        print("[daily] 最近一天没有记录，跳过")
         return "empty"
-    joined = "\n\n---\n\n".join(blobs)
-    title, body = daily_summary(responder, joined)
-    if body == FALLBACK_REPLY:
+    joined = f"【当前时间】{_now_hint()}\n\n" + "\n\n---\n\n".join(blobs)
+    title, sections = daily_summary(responder, joined)
+    if sections.get("body") == FALLBACK_REPLY:
         print("[daily] 所有模型失败，不生成日总结（避免写入兜底话术）")
         return "failed"
-    nz.create_letter(title, body)   # 复用 Letters 库存放日总结
+    mood = _mood_snapshot(nz, pages)
+    page_id = nz.create_daily(title, sections, mood)   # 复用 Letters 库存放日总结
+    _notify(nz, page_id, f"今天的日总结《{title}》已经写好啦 🌙")
     print(f"[daily] 已生成《{title}》，综合了 {len(blobs)} 条今日记录")
     return "ok"
+
+
+def _mood_snapshot(nz: Notion, pages: list[dict], top: int = 3) -> str:
+    """把当天各条记录的情绪标签汇总成一行『心情底色』，复用已识别好的标签，不额外调模型。
+    按出现频次取前 top 个，如『笃定 · 平静 · 感激』。全无标签则返回空串。"""
+    from collections import Counter
+    counter: Counter[str] = Counter()
+    for p in pages:
+        for e in nz.prop_multi_select(p, "情绪"):
+            counter[e] += 1
+    return " · ".join(name for name, _ in counter.most_common(top))
 
 
 def main():

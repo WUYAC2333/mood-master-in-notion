@@ -41,7 +41,9 @@ class Notion:
         self.entities_db = cfg["entities_db"]
         self.letters_db = cfg.get("letters_db")
         self.rules_db = cfg.get("rules_db")
+        self.notify_user_id = cfg.get("notify_user_id")  # 可选：手动指定要@提醒的人
         self._ds_cache: dict[str, str] = {}  # database_id -> data_source_id
+        self._person_id_cache: str | None = None  # 自动识别的真人 user id（""=识别失败）
 
     def _data_source_id(self, database_id: str) -> str:
         """API 2025-09-03：查询/建页都针对数据库下的 data source，而非数据库本身。"""
@@ -85,15 +87,19 @@ class Notion:
         )
         return res.get("results", [])
 
-    def entries_today(self, tz_offset_hours: int = 8) -> list[dict]:
-        """取"今天"（默认北京时间）创建的记录，供日总结使用。"""
+    def entries_for_daily(self, lookback_hours: int = 24) -> list[dict]:
+        """取最近 lookback_hours 小时内创建的记录，供日总结使用。
+
+        为什么用"滚动 24h 窗口"而不是"自然日 00:00 起"：日总结固定每晚 22:00 触发。
+        若按自然日切，22:00~次日 00:00 写的记录既赶不上当晚总结（那时它还没被创建），
+        又不属于次日"00:00 起"的窗口，会两头落空、永久漏掉。改成"过去 24h"后，
+        每晚 22:00 的总结覆盖 [前一晚 22:00, 今晚 22:00)，相邻两天首尾相接，不漏不重。
+        """
         from datetime import datetime, timedelta, timezone
-        tz = timezone(timedelta(hours=tz_offset_hours))
-        now_local = datetime.now(tz)
-        start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
         return self._query(self.entries_db, {
             "timestamp": "created_time",
-            "created_time": {"on_or_after": start_local.astimezone(timezone.utc).isoformat()},
+            "created_time": {"on_or_after": since},
         })
 
     def active_rules(self) -> list[dict]:
@@ -203,23 +209,110 @@ class Notion:
         )
         return page["id"]
 
-    # ── 来信：新建一页 ────────────────────────────────────
-    def create_letter(self, title: str, body: str) -> str:
+    # ── 来信 / 日总结：新建一页 ───────────────────────────
+    def _create_letter_page(self, title: str, children: list[dict],
+                            icon: str | None = None) -> str:
         from datetime import datetime, timezone
-        page = self.client.pages.create(
-            parent={"type": "data_source_id",
-                    "data_source_id": self._data_source_id(self.letters_db)},
-            properties={
+        kwargs = {
+            "parent": {"type": "data_source_id",
+                       "data_source_id": self._data_source_id(self.letters_db)},
+            "properties": {
                 "Name": {"title": [{"text": {"content": title}}]},
                 "日期": {"date": {"start": datetime.now(timezone.utc).isoformat()}},
             },
-            children=[{
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": _chunk_rich_text(body)},
-            }],
-        )
+            "children": children,
+        }
+        if icon:
+            kwargs["icon"] = {"type": "emoji", "emoji": icon}
+        page = self.client.pages.create(**kwargs)
         return page["id"]
+
+    def create_letter(self, title: str, body: str) -> str:
+        """来信渲染成信笺样式：日期小抬头 + 分隔线 + 逐段落正文。内容仍是自然段落的信。"""
+        from datetime import datetime, timedelta, timezone
+        local = datetime.now(timezone(timedelta(hours=8)))
+        week = "一二三四五六日"[local.weekday()]
+        date_line = local.strftime(f"%Y 年 %m 月 %d 日 · 周{week}")
+        blocks: list[dict] = [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": [
+                 {"type": "text", "text": {"content": date_line},
+                  "annotations": {"italic": True, "color": "gray"}}]}},
+            _divider(),
+        ]
+        # 按空行切成一段段，让信读起来有段落的呼吸感（内容不变）
+        paras = [p for p in body.split("\n") if p.strip()]
+        for para in (paras or [body]):
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(para)}})
+        return self._create_letter_page(title, blocks, icon="💌")
+
+    def create_daily(self, title: str, sections: dict, mood: str = "") -> str:
+        """把日总结渲染成结构化卡片：心情底色 + 正文 + 亮点 + 小提醒 + 结尾寄语。
+        sections 含 body/praise/suggestion/closing，缺项自动跳过。"""
+        blocks: list[dict] = []
+        if mood:
+            blocks.append(_callout(f"心情底色  {mood}", "🌙", "gray_background"))
+        # 正文按空行拆成多段，读起来有呼吸感
+        for para in [p for p in sections.get("body", "").split("\n") if p.strip()]:
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(para)}})
+        if sections.get("praise"):
+            blocks.append(_divider())
+            blocks.append(_callout(sections["praise"], "✨", "green_background",
+                                   label="今天你做得好的"))
+        if sections.get("suggestion"):
+            blocks.append(_callout(sections["suggestion"], "🌱", "blue_background",
+                                   label="也许可以更好的"))
+        if sections.get("closing"):
+            blocks.append(_divider())
+            blocks.append({"object": "block", "type": "quote",
+                           "quote": {"rich_text": _chunk_rich_text("💭 " + sections["closing"])}})
+        if not blocks:  # 极端兜底：什么都没解析出来也别建空页
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(sections.get("body", ""))}})
+        return self._create_letter_page(title, blocks, icon="🌙")
+
+    # ── 通知：在页面发一条 @提及的评论，触发 Notion 收件箱提醒 ──
+    def _resolve_person_id(self) -> str:
+        """确定要@提醒谁：优先配置里的 notify_user_id；否则自动挑工作区里唯一的真人。
+        识别不到（多个真人 / 无权限）返回 ""，调用方据此跳过提醒。结果缓存，避免重复请求。"""
+        if self.notify_user_id:
+            return self.notify_user_id
+        if self._person_id_cache is not None:
+            return self._person_id_cache
+        try:
+            persons = []
+            cursor = None
+            while True:
+                res = self.client.users.list(start_cursor=cursor) if cursor \
+                    else self.client.users.list()
+                for u in res.get("results", []):
+                    if u.get("type") == "person":  # 排除集成机器人(bot)
+                        persons.append(u["id"])
+                if not res.get("has_more"):
+                    break
+                cursor = res.get("next_cursor")
+            self._person_id_cache = persons[0] if len(persons) == 1 else ""
+        except Exception:  # noqa: BLE001 权限不足等，静默降级为不提醒
+            self._person_id_cache = ""
+        return self._person_id_cache
+
+    def notify_on_page(self, page_id: str, text: str) -> bool:
+        """在指定页面发一条 @提及的评论。返回是否成功发出（含提及）。"""
+        uid = self._resolve_person_id()
+        rich: list[dict] = []
+        if uid:
+            rich.append({"type": "mention", "mention": {"user": {"id": uid}}})
+            rich.append({"type": "text", "text": {"content": " " + text}})
+        else:
+            # 识别不到人也照发评论（至少页面上有痕迹），只是不@、可能不推送
+            rich.append({"type": "text", "text": {"content": text}})
+        self.client.comments.create(
+            parent={"page_id": page_id},
+            rich_text=rich,
+        )
+        return bool(uid)
 
 
 def _chunk_rich_text(text: str) -> list[dict]:
@@ -227,3 +320,19 @@ def _chunk_rich_text(text: str) -> list[dict]:
     limit = 1900
     chunks = [text[i:i + limit] for i in range(0, len(text), limit)] or [""]
     return [{"type": "text", "text": {"content": c}} for c in chunks]
+
+
+def _divider() -> dict:
+    return {"object": "block", "type": "divider", "divider": {}}
+
+
+def _callout(text: str, emoji: str, color: str, label: str = "") -> dict:
+    """一个带图标与底色的 callout。label 非空时作为加粗小标题起头、正文另起一行。"""
+    rich: list[dict] = []
+    if label:
+        rich.append({"type": "text", "text": {"content": label + "\n"},
+                     "annotations": {"bold": True}})
+    rich.extend(_chunk_rich_text(text))
+    return {"object": "block", "type": "callout",
+            "callout": {"rich_text": rich, "icon": {"type": "emoji", "emoji": emoji},
+                        "color": color}}

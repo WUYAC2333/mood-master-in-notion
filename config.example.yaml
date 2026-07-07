@@ -9,6 +9,9 @@ notion:
   entities_db: "0d399995-ac57-4fe2-b6f7-4fd1979eb449"
   letters_db: "0be076df-0f03-4124-a01e-85ff8199edf2"
   rules_db: "5c8598e2-f3ef-4098-87c6-36c188da2f70"
+  # 可选：来信/日总结生成后，在该页发一条 @提及评论触发 Notion 通知。
+  # 留空则自动识别工作区里唯一的真人；多人工作区请填自己的 user id。
+  # notify_user_id: ""
 
 classifier:
   provider: "openai"
