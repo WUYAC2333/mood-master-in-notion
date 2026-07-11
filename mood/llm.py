@@ -105,6 +105,28 @@ class LLM:
         # 拼接所有 text block
         return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
 
+    def list_model_ids(self) -> list[str] | None:
+        """拉取端点当前可用的 model id 列表（GET /models）。
+        用于诊断：中转站 500 "Upstream gateway error" 既可能是上游真挂了，
+        也可能只是我们配的模型名不存在——查一下列表就能区分。
+        拿不到（网络/鉴权/端点不支持）时返回 None，绝不抛出。"""
+        try:
+            if self.provider == "anthropic":
+                from anthropic import Anthropic
+                kwargs = {"api_key": self.api_key}
+                if self.base_url:
+                    kwargs["base_url"] = self.base_url
+                data = Anthropic(**kwargs).models.list()
+            else:
+                from openai import OpenAI
+                kwargs = {"api_key": self.api_key}
+                if self.base_url:
+                    kwargs["base_url"] = self.base_url
+                data = OpenAI(**kwargs).models.list()
+            return [m.id for m in getattr(data, "data", [])]
+        except Exception:  # noqa: BLE001
+            return None
+
     def _openai(self, system: str, user: str, max_tokens: int) -> str:
         from openai import OpenAI
 
@@ -160,9 +182,28 @@ class FallbackLLM:
                 return alt.complete(system, user, max_tokens)
             except Exception as e:  # noqa: BLE001
                 print(f"[llm] 备用模型 {name} 也失败：{_err_detail(e)}")
-        # 3) 全失败 → 固定兜底话术
+        # 3) 全失败 → 先诊断是不是「模型名不存在」（中转站会把它伪装成 500 上游错误）
+        self._diagnose_model_names()
+        # 4) 返回固定兜底话术
         print("[llm] 所有模型均失败，返回兜底话术")
         return self.final_reply
+
+    def _diagnose_model_names(self) -> None:
+        """全部失败后自检：把配置里用到的模型名和端点实际可用列表对一下。
+        若配的名字压根不在列表里，就明确报「模型名失效」而不是含糊的上游错误——
+        这类失败换端点/换 key 都没用，只能改模型名。"""
+        configured = [self.primary.model, *self.fallback_models]
+        available = self.primary.list_model_ids()
+        if available is None:
+            print("[llm] （无法拉取模型列表，跳过模型名自检）")
+            return
+        missing = [m for m in configured if m not in available]
+        if missing:
+            print(f"[llm][模型名失效] 配置的模型 {missing} 不在端点可用列表里，"
+                  f"这就是本次 500 的真因（换端点/换 key 无效，需改模型名）。"
+                  f"端点当前可用：{sorted(available)}")
+        else:
+            print("[llm] 配置的模型名都在端点列表里，本次 500 更可能是上游真故障，稍后重试。")
 
 
 def responder_from_cfg(section: dict) -> FallbackLLM:

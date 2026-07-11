@@ -21,13 +21,15 @@ classifier:
 
 responder:
   provider: "openai"
-  model: "gpt-5-4-mini"
+  model: "gpt-5.4-mini"
   api_key: "${LINGMOU_GPT_API_KEY}"
   base_url: "https://api.lmuai.com/v1"
   # 主模型重试失败后，用同一 key/端点依次尝试这些模型名
+  # 注意：中转站的 model id 用「点号」（gpt-5.4），不是中划线（gpt-5-4）；
+  # 名字有变时用 GET /v1/models 查真实 id。
   fallback_models:
-    - "gpt-5-4"
-    - "gpt-5-2"
+    - "gpt-5.4"
+    - "gpt-5.5"
 
 letter:
   lookback_days: 7
