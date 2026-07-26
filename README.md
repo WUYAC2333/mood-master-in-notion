@@ -12,6 +12,13 @@
 - **情绪识别**：脚本轮询新记录，用便宜小模型打情绪标签（写回「情绪」属性）。
 - **选择性回应**：勾选「求回应」，下次轮询时用你的好模型生成一段贴近事实、不灌鸡汤的回应，
   作为 callout 追加到记录页里。不勾就只记录、不回应。
+- **每日总结**：每晚综合当天记录，生成一张结构化卡片（心情底色 / 正文 / 亮点 / 小提醒 / 一句话）。
+- **周回顾**：每周日综合一周记录，生成一张理性复盘卡（本周概览 / 情绪走势 / 反复出现的模式 /
+  本周亮点 / 下周留意的一件事）。情绪分布、逐日情绪、@提到的人与事都由代码统计好再喂给模型，
+  数字不会被编造。与来信分工：**周回顾管模式与趋势，来信负责温暖陪伴。**
+- **月总结**：每月最后一天综合整月记录，生成一份月报（本月概览 / 本月主题 / 主线叙事 /
+  和月初比变了什么 / 值得记住的时刻 / 下个月的方向）。视角比周回顾更高：看主线与变化，
+  而不是把四周拼起来。上下文较长，但一个月只跑一次。
 - **定期来信**：每周综合近期记录，写一封诚实温暖的信，存到 Letters 数据库。
 - **@实体网络**：正文里写 `@[名称]`，自动建实体并把记录关联过去；在实体页用反向关联看全部相关记录。
 - **规则 agent**：在 Rules 数据库定义「触发条件 + 提醒话术」（如反事实大师），
@@ -21,10 +28,13 @@
 
 ## 时效说明
 
-四个工作流都只用 `workflow_dispatch` 触发，由外部定时器（cron-job.org，免费）
+六个工作流都靠 `workflow_dispatch` 触发，由外部定时器（cron-job.org，免费）
 按精确时间调 GitHub API 唤起 —— **不用 GitHub 自带的 `schedule`**，因为它“尽力而为”，
 高峰常延迟数小时甚至跳过（曾把“当晚 22:00”的日总结拖到次日凌晨）。
 `workflow_dispatch` 不受此影响，runner 几秒内即起。
+
+（例外：`letter.yml` 里还留着一条 `schedule`，因为一周一次、晚点无妨。它与
+`workflow_dispatch` 共存，所以外部定时器照样能精确唤起它。）
 
 即便某次触发漏了，`run.py` 的自愈逻辑（只处理“没打勾”的记录）也会在下次补上，
 不会重复、不会永久漏处理。外部定时器的配置见下方「外部定时器」一节。
@@ -77,7 +87,15 @@
      `X-GitHub-Api-Version: 2022-11-28`
    - Body：`{"ref":"main"}`
    - 时间：poll.yml 每 15 分钟、bubbles.yml 每小时、daily.yml 每天 22:00、
-     letter.yml 每周日 22:30。
+     weekly.yml 每周日 21:00、letter.yml 每周日 22:30、
+     **monthly.yml 每月 28/29/30/31 号 20:00**（四天都触发，脚本自己判断月末，见下）。
+     （周日那晚三份产出依次错开一小时以内：周回顾 → 日总结 → 来信，互不打架。）
+
+**月总结为什么要配四天**：标准 cron 无法表达"每月最后一天"（各月 28~31 天不等）。
+所以定时器在 28-31 号都触发，`run.py` 的 `_is_month_end()` 判断今天是否真的是当月最后一天，
+不是就直接跳过、不调模型不花钱。这样 2 月不会漏、大月也不会重复生成，配一次之后零维护。
+想手动补跑某个月：Actions 页 Run workflow 时把 `force` 选成 true，或本地
+`python -m mood.run --task monthly --force`。
 4. 每个建好后点 TEST RUN，到 Actions 页确认对应工作流被触发即成功。
 
 > `workflow_dispatch` 要求工作流文件已在默认分支（main）上，所以先推送、再去 cron-job.org 配置。
@@ -108,6 +126,9 @@
 pip install -r requirements.txt
 cp config.example.yaml config.yaml   # 填入明文 token 和 key
 python -m mood.run --task all        # 日常轮询
+python -m mood.run --task daily      # 手动日总结
+python -m mood.run --task weekly     # 手动周回顾
+python -m mood.run --task monthly --force   # 手动月总结（--force 跳过月末判断）
 python -m mood.run --task letter     # 手动来信
 ```
 
@@ -125,7 +146,7 @@ mood/
   notion.py     Notion 读写
   classify.py   情绪识别
   entities.py   @实体解析
-  generate.py   回应 / 来信 / 规则提醒
-  run.py        主流程（classify / respond / rules / letter）
+  generate.py   回应 / 日总结 / 周回顾 / 月总结 / 来信 / 规则提醒
+  run.py        主流程（classify / respond / rules / daily / weekly / monthly / letter）
 setup_notion.py 一次性建库脚本
 ```

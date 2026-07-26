@@ -1,0 +1,34 @@
+name: mood-monthly
+# 月总结：每月最后一天 20:00（北京时间）生成，看一整月的主线与变化。
+#
+# 标准 cron 没法表达「月末」，所以外部定时器（cron-job.org）配成每月 28-31 号都触发，
+# 由 run.py 的 _is_month_end() 判断今天是不是真正的当月最后一天 —— 不是就跳过。
+# 这样 2 月不会漏、大小月也不会重复生成，配一次之后零维护。
+#
+# 想手动补跑某个月：在 Actions 页 Run workflow 时把 force 选成 true，绕过月末判断。
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略『必须月末那天』的判断，立即生成"
+        type: boolean
+        default: false
+
+jobs:
+  monthly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Monthly summary
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LINGMOU_GPT_API_KEY: ${{ secrets.LINGMOU_GPT_API_KEY }}
+        run: |
+          cp config.example.yaml config.yaml
+          python -m mood.run --task monthly ${{ inputs.force && '--force' || '' }}
