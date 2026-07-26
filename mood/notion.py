@@ -95,12 +95,42 @@ class Notion:
         又不属于次日"00:00 起"的窗口，会两头落空、永久漏掉。改成"过去 24h"后，
         每晚 22:00 的总结覆盖 [前一晚 22:00, 今晚 22:00)，相邻两天首尾相接，不漏不重。
         """
+        return self._entries_since_hours(lookback_hours)
+
+    def entries_for_weekly(self, lookback_hours: int = 168) -> list[dict]:
+        """取最近 lookback_hours 小时（默认 7×24）内创建的记录，供周回顾使用。
+
+        同样用滚动窗口而非自然周，理由与 entries_for_daily 一致：触发时刻固定，
+        滚动窗口能让相邻两周首尾相接，不漏不重。一周的记录条数可能超过单页上限，
+        所以这里走分页版查询，避免记得多的那周被静默截断。
+        """
+        return self._entries_since_hours(lookback_hours, paginate=True)
+
+    def entries_for_monthly(self, tz_offset_hours: int = 8) -> list[dict]:
+        """取「北京时间本月 1 号 00:00 起」到现在的所有记录，供月总结使用。
+
+        这里刻意用自然月而不是滚动 30 天：月总结的语义就是"这个月"，
+        跨月边界的滚动窗口会把上个月的尾巴混进来，而且各月天数不同（28~31），
+        滚动窗口会让 2 月多算、大月少算。按自然月切，每月首尾正好接上。
+        条数按一个月算可能不少，所以走分页版查询，避免写得多的月份被静默截断。
+        """
         from datetime import datetime, timedelta, timezone
-        since = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
-        return self._query(self.entries_db, {
+        tz = timezone(timedelta(hours=tz_offset_hours))
+        month_start = datetime.now(tz).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0)
+        # Notion 按 UTC 比较，带时区的 isoformat 会被正确换算
+        return self._query_all(self.entries_db, {
             "timestamp": "created_time",
-            "created_time": {"on_or_after": since},
+            "created_time": {"on_or_after": month_start.isoformat()},
         })
+
+    def _entries_since_hours(self, hours: int, paginate: bool = False) -> list[dict]:
+        """按「创建时间在最近 hours 小时内」查 Entries，日总结与周回顾共用。"""
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        filt = {"timestamp": "created_time", "created_time": {"on_or_after": since}}
+        return self._query_all(self.entries_db, filt) if paginate \
+            else self._query(self.entries_db, filt)
 
     def active_rules(self) -> list[dict]:
         if not self.rules_db:
@@ -120,6 +150,23 @@ class Notion:
         if filt:
             kwargs["filter"] = filt
         return self.client.data_sources.query(**kwargs).get("results", [])
+
+    def _query_all(self, db_id: str, filt: dict | None) -> list[dict]:
+        """同 _query，但翻完所有页。给「窗口较长、条数可能超过单页」的查询用。"""
+        ds_id = self._data_source_id(db_id)
+        out: list[dict] = []
+        cursor: str | None = None
+        while True:
+            kwargs = {"data_source_id": ds_id, "page_size": _PAGE_SIZE}
+            if filt:
+                kwargs["filter"] = filt
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            res = self.client.data_sources.query(**kwargs)
+            out.extend(res.get("results", []))
+            if not res.get("has_more"):
+                return out
+            cursor = res.get("next_cursor")
 
     # ── 读取页面内容 ──────────────────────────────────────
     def page_body_text(self, page_id: str) -> str:
@@ -272,6 +319,60 @@ class Notion:
             blocks.append({"object": "block", "type": "paragraph",
                            "paragraph": {"rich_text": _chunk_rich_text(sections.get("body", ""))}})
         return self._create_letter_page(title, blocks, icon="🌙")
+
+    def create_weekly(self, title: str, sections: dict, stats: str = "") -> str:
+        """把周回顾渲染成复盘卡：本周概览（代码统计的硬数据）+ 情绪走势正文
+        + 反复出现 + 本周亮点 + 下周留意。sections 含 body/pattern/praise/focus，缺项跳过。"""
+        blocks: list[dict] = []
+        if stats:
+            blocks.append(_callout(stats, "📊", "gray_background", label="本周概览"))
+        for para in [p for p in sections.get("body", "").split("\n") if p.strip()]:
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(para)}})
+        if sections.get("pattern"):
+            blocks.append(_divider())
+            blocks.append(_callout(sections["pattern"], "🔁", "yellow_background",
+                                   label="这周反复出现的"))
+        if sections.get("praise"):
+            blocks.append(_callout(sections["praise"], "✨", "green_background",
+                                   label="本周你做成的"))
+        if sections.get("focus"):
+            blocks.append(_divider())
+            blocks.append(_callout(sections["focus"], "🎯", "blue_background",
+                                   label="下周想留意的一件事"))
+        if not blocks:  # 极端兜底：什么都没解析出来也别建空页
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(sections.get("body", ""))}})
+        return self._create_letter_page(title, blocks, icon="📅")
+
+    def create_monthly(self, title: str, sections: dict, stats: str = "") -> str:
+        """把月总结渲染成月报：本月概览（代码统计的硬数据）+ 主线叙事 + 本月主题
+        + 变化 + 值得记住 + 下个月。sections 含 body/theme/change/memorable/next，缺项跳过。"""
+        blocks: list[dict] = []
+        if stats:
+            blocks.append(_callout(stats, "📊", "gray_background", label="本月概览"))
+        if sections.get("theme"):
+            # 主题放在正文之前当"题眼"，一眼看到这个月是关于什么的
+            blocks.append(_callout(sections["theme"], "🧭", "purple_background",
+                                   label="本月主题"))
+        for para in [p for p in sections.get("body", "").split("\n") if p.strip()]:
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(para)}})
+        if sections.get("change"):
+            blocks.append(_divider())
+            blocks.append(_callout(sections["change"], "📈", "orange_background",
+                                   label="和月初比，变了什么"))
+        if sections.get("memorable"):
+            blocks.append(_callout(sections["memorable"], "🌟", "green_background",
+                                   label="值得记住的时刻"))
+        if sections.get("next"):
+            blocks.append(_divider())
+            blocks.append(_callout(sections["next"], "🌱", "blue_background",
+                                   label="下个月的方向"))
+        if not blocks:  # 极端兜底：什么都没解析出来也别建空页
+            blocks.append({"object": "block", "type": "paragraph",
+                           "paragraph": {"rich_text": _chunk_rich_text(sections.get("body", ""))}})
+        return self._create_letter_page(title, blocks, icon="🗓️")
 
     # ── 通知：在页面发一条 @提及的评论，触发 Notion 收件箱提醒 ──
     def _resolve_person_id(self) -> str:

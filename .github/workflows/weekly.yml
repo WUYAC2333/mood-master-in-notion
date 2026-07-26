@@ -1,0 +1,26 @@
+name: mood-weekly
+# 周回顾（理性复盘卡）：每周日 21:00（北京时间）由外部定时器 cron-job.org 触发。
+# 排在当晚的日总结（22:00）与来信（22:30）之前，三份产出互不打架：
+# 周回顾管一周的模式与趋势，日总结管当天，来信负责陪伴。
+# 不用 GitHub schedule —— 它会延迟数小时，曾把“当晚 22:00”的总结拖到次日凌晨。
+on:
+  workflow_dispatch: {}
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Weekly review
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          LINGMOU_GPT_API_KEY: ${{ secrets.LINGMOU_GPT_API_KEY }}
+        run: |
+          cp config.example.yaml config.yaml
+          python -m mood.run --task weekly

@@ -44,7 +44,7 @@ _DAILY_SYSTEM = (
     "提到某件事时可自然点出时间（如\"今早\"\"下午三点多\"），让回顾更有画面感，但不要生硬罗列时间戳。"
 )
 
-# 正文之外三个结构化板块的标记，供 _parse_daily 按实际位置切分
+# 正文之外三个结构化板块的标记，供 _parse_sections 按实际位置切分
 _DAILY_MARKS = [("praise", "亮点："), ("suggestion", "小提醒："), ("closing", "一句话：")]
 
 
@@ -52,7 +52,7 @@ def daily_summary(llm: LLM, entries_text: str) -> tuple[str, dict]:
     """返回 (标题, sections)。sections 含 body/praise/suggestion/closing 四段，
     后三段可能为空（模型未按格式输出或全失败时）。"""
     raw = llm.complete(_DAILY_SYSTEM, entries_text, max_tokens=1500)
-    sections = _parse_daily(raw)
+    sections = _parse_sections(raw, _DAILY_MARKS)
     from datetime import datetime, timedelta, timezone
     local = datetime.now(timezone(timedelta(hours=8)))  # 北京时间，避免 UTC runner 算错日期
     week = "一二三四五六日"[local.weekday()]
@@ -60,16 +60,16 @@ def daily_summary(llm: LLM, entries_text: str) -> tuple[str, dict]:
     return title, sections
 
 
-def _parse_daily(raw: str) -> dict:
-    """按「亮点：」「小提醒：」「一句话：」的实际出现位置切分模型输出。
+def _parse_sections(raw: str, marks: list[tuple[str, str]]) -> dict:
+    """按各板块标记（如「亮点：」）在文本中的实际出现位置切分模型输出。
     找不到任何标记就整段当正文，其余留空——保证退化时不丢内容。
-    返回 {'body', 'praise', 'suggestion', 'closing'}，四键恒在。"""
+    返回 {'body'} + marks 里的所有键，键恒在。日总结与周回顾共用。"""
     # 找出每个标记在文本中的位置（按出现顺序，容忍模型漏写某些板块）
     found = [(name, mark, idx)
-             for name, mark in _DAILY_MARKS
+             for name, mark in marks
              if (idx := raw.find(mark)) != -1]
     found.sort(key=lambda x: x[2])
-    out = {"body": "", "praise": "", "suggestion": "", "closing": ""}
+    out = {"body": ""} | {name: "" for name, _ in marks}
     if not found:
         out["body"] = raw.strip()
         return out
@@ -82,6 +82,76 @@ def _parse_daily(raw: str) -> dict:
     if not out["body"]:
         out["body"] = raw.strip()
     return out
+
+
+# ── 1c. 周回顾（理性复盘，与「来信」的情感陪伴分工）─────────
+_WEEKLY_SYSTEM = (
+    "你是用户冷静而可靠的复盘伙伴。下面是 TA 最近一周的全部心情记录，"
+    "以及系统预先统计好的【情绪分布】【逐日情绪】【本周提到的人与事】。\n"
+    "这是一份「周回顾」，定位与日总结、来信都不同：日总结管当天的情绪，来信负责温暖陪伴，"
+    "而你要做的是拉开距离看一整周——找跨天的模式、趋势与因果，而不是复述某一天发生了什么。\n"
+    "请按以下四部分写，每部分之间空一行：\n"
+    "1）正文：一段关于本周情绪走势的叙述。结合【逐日情绪】说清这一周的形状"
+    "（如\"周一到周三绷着，周四之后松下来\"），并尽量指出转折点是什么事引起的。"
+    "用第二人称\"你\"，就事论事、不灌鸡汤、不编造统计里没有的东西，250-400 字。\n"
+    "2）另起一行，以「反复出现：」开头，指出本周反复出现的 1-3 个主题、人物或思维模式——"
+    "尤其是那些单看某一天不明显、连起来看才成形的东西。可参考【本周提到的人与事】的频次，"
+    "但要落到具体内容上，说清它每次出现时的样子和变化。\n"
+    "3）另起一行，以「本周亮点：」开头，具体点出 TA 这周真正做成或撑住的 1-3 件事，"
+    "尤其是需要跨天坚持才看得出来的进展。点名具体的事，让肯定落到实处，不空泛吹捧。\n"
+    "4）另起一行，以「下周留意：」开头，只提一件最值得留意的事——从本周模式里自然长出来的、"
+    "具体可执行的一件，不要列清单、不要说教。若这周确实没什么要调整的，"
+    "就写「下周留意：这周的节奏挺好，照这样继续就行。」\n"
+    "每条记录前的【方括号】是它的真实发生时间（北京时间，含星期与时刻），开头的【当前时间】是现在。"
+    "谈到具体事情时自然点出是哪天（如\"周二深夜\"\"周末那两天\"），让走势有画面感，不要罗列时间戳。"
+)
+
+_WEEKLY_MARKS = [("pattern", "反复出现："), ("praise", "本周亮点："),
+                 ("focus", "下周留意：")]
+
+
+def weekly_summary(llm: LLM, entries_text: str, date_range: str) -> tuple[str, dict]:
+    """返回 (标题, sections)。sections 含 body/pattern/praise/focus 四段，
+    后三段可能为空（模型未按格式输出或全失败时）。
+    date_range 形如 '2026-07-20 ~ 07-26'，由调用方按实际覆盖窗口算好。"""
+    raw = llm.complete(_WEEKLY_SYSTEM, entries_text, max_tokens=2000)
+    return f"周回顾 · {date_range}", _parse_sections(raw, _WEEKLY_MARKS)
+
+
+# ── 1d. 月总结（拉到最高处看一个月）─────────────────────────
+_MONTHLY_SYSTEM = (
+    "你是用户长期的观察者与复盘伙伴。下面是 TA 这一个月的心情记录，"
+    "以及系统预先统计好的【情绪分布】【逐周情绪】【本月提到的人与事】。\n"
+    "这是一份「月总结」，站得比日总结和周回顾都高：日总结管当天，周回顾管一周的模式，"
+    "而你要做的是看一个月的**主线与变化**——这个月真正在发生什么、TA 和月初比哪里不一样了。"
+    "不要复述具体某天，也不要把四周的周回顾拼起来；要提炼出只有拉到一个月才看得见的东西。\n"
+    "请按以下五部分写，每部分之间空一行：\n"
+    "1）正文：这个月的主线叙事。结合【逐周情绪】说清整月的形状与节奏（哪几周紧、哪几周松、"
+    "转折发生在什么时候、因为什么），并把散落各周的事串成一条线。"
+    "用第二人称\"你\"，就事论事、不灌鸡汤、不编造统计里没有的东西，400-600 字。\n"
+    "2）另起一行，以「本月主题：」开头，用一句话概括这个月对 TA 而言最核心的一件事或一种状态，"
+    "再用两三句说明为什么是它。要具体，不要\"成长与蜕变\"这类空话。\n"
+    "3）另起一行，以「变化：」开头，对比月初与月末，指出 1-3 处真实发生的变化——"
+    "可以是处理某类问题的方式、对某个人的态度、某种情绪出现的频率，也可以是某个卡了很久的坎过去了。"
+    "必须有记录作依据；这个月若确实没什么明显变化，就诚实地说\"这个月更像是稳住而不是改变\"并说明。\n"
+    "4）另起一行，以「值得记住：」开头，挑出这个月最值得被记住的 2-3 个时刻，"
+    "每个用一句话点出是什么事、为什么值得留下来。可以是高光，也可以是撑过来的低谷。\n"
+    "5）另起一行，以「下个月：」开头，给出一个方向而不是一份清单——"
+    "从这个月的主线自然长出来的、值得花一个月去试的一件事，两三句说清为什么和怎么开始。\n"
+    "每条记录前的【方括号】是它的真实发生时间（北京时间，含星期与时刻），开头的【当前时间】是现在。"
+    "谈到具体事情时自然点出大致时间（如\"月初那几天\"\"中旬\"\"上个周末\"），不要罗列时间戳。"
+)
+
+_MONTHLY_MARKS = [("theme", "本月主题："), ("change", "变化："),
+                  ("memorable", "值得记住："), ("next", "下个月：")]
+
+
+def monthly_summary(llm: LLM, entries_text: str, month_label: str) -> tuple[str, dict]:
+    """返回 (标题, sections)。sections 含 body/theme/change/memorable/next 五段，
+    后四段可能为空（模型未按格式输出或全失败时）。
+    month_label 形如 '2026 年 7 月'，由调用方按实际月份算好。"""
+    raw = llm.complete(_MONTHLY_SYSTEM, entries_text, max_tokens=3000)
+    return f"月总结 · {month_label}", _parse_sections(raw, _MONTHLY_MARKS)
 
 
 # ── 2. 定期来信 ──────────────────────────────────────────
